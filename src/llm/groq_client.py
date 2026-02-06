@@ -51,3 +51,51 @@ class GroqClient:
             from groq import Groq
             self._client = Groq(api_key=self.config.api_key)
         return self._client
+
+    def chat(self, user_message: str, context: Optional[str] = None) -> str:
+        """
+        Send a message to Llama 3 and get a response.
+
+        Args:
+            user_message: The user's input text.
+            context: Optional conversation context/history.
+
+        Returns:
+            The assistant's response text.
+        """
+        client = self._get_client()
+
+        messages = []
+
+        # Add system prompt
+        messages.append({
+            "role": "system",
+            "content": self._get_system_prompt()
+        })
+
+        # Add context if provided
+        if context:
+            messages.append({
+                "role": "user",
+                "content": f"Previous context: {context}"
+            })
+
+        # Add current user message
+        messages.append({
+            "role": "user",
+            "content": user_message
+        })
+
+        # Call Groq API
+        response = client.chat.completions.create(
+            model=self.config.model,
+            messages=messages,
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens
+        )
+
+        return response.choices[0].message.content
+
+    def _get_system_prompt(self) -> str:
+        """Get the system prompt. To be implemented in next commit."""
+        return "You are a helpful assistant."
