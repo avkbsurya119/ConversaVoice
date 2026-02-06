@@ -7,3 +7,5 @@ pyaudio
 numpy
 groq
 python-dotenv
+redis
+sentence-transformers

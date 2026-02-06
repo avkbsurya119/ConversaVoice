@@ -111,3 +111,91 @@ class VectorStore:
             vectors.append((data["text"], np.array(data["embedding"])))
 
         return vectors
+
+    def cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+        """
+        Calculate cosine similarity between two vectors.
+
+        Args:
+            vec1: First vector.
+            vec2: Second vector.
+
+        Returns:
+            Similarity score between 0 and 1.
+        """
+        dot_product = np.dot(vec1, vec2)
+        norm1 = np.linalg.norm(vec1)
+        norm2 = np.linalg.norm(vec2)
+
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+
+        return dot_product / (norm1 * norm2)
+
+    def check_repetition(
+        self,
+        session_id: str,
+        text: str
+    ) -> SimilarityResult:
+        """
+        Check if the input text is semantically similar to previous messages.
+
+        Args:
+            session_id: Session identifier.
+            text: New input text to check.
+
+        Returns:
+            SimilarityResult with highest match and repetition flag.
+        """
+        new_embedding = self.get_embedding(text)
+        stored_vectors = self.get_stored_vectors(session_id)
+
+        if not stored_vectors:
+            # No previous messages, store this one
+            self.store_embedding(session_id, text)
+            return SimilarityResult(
+                text="",
+                score=0.0,
+                is_repetition=False
+            )
+
+        # Find highest similarity
+        max_score = 0.0
+        most_similar_text = ""
+
+        for stored_text, stored_embedding in stored_vectors:
+            score = self.cosine_similarity(new_embedding, stored_embedding)
+            if score > max_score:
+                max_score = score
+                most_similar_text = stored_text
+
+        # Store the new embedding
+        self.store_embedding(session_id, text)
+
+        is_repetition = max_score >= self.similarity_threshold
+
+        if is_repetition:
+            logger.info(
+                f"Repetition detected (score: {max_score:.2f}): "
+                f"'{text[:50]}...' similar to '{most_similar_text[:50]}...'"
+            )
+
+        return SimilarityResult(
+            text=most_similar_text,
+            score=max_score,
+            is_repetition=is_repetition
+        )
+
+    def clear_vectors(self, session_id: str) -> bool:
+        """
+        Clear all vectors for a session.
+
+        Args:
+            session_id: Session identifier.
+
+        Returns:
+            True if cleared successfully.
+        """
+        key = self._vectors_key(session_id)
+        self.redis_client.client.delete(key)
+        return True
