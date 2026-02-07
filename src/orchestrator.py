@@ -243,23 +243,49 @@ class Orchestrator:
                 latency_ms=latency_ms
             )
 
-    async def process_audio(self, audio_data: bytes) -> PipelineResult:
-        """
-        Process audio input through the full pipeline.
-
-        Args:
-            audio_data: Raw audio bytes
-
-        Returns:
-            Pipeline result with response and metadata
-        """
-        pass  # Will be implemented in subsequent commits
-
-    async def run_interactive(self) -> None:
+    async def run_interactive(self, use_voice: bool = False) -> None:
         """
         Run the orchestrator in interactive mode.
 
-        Continuously listens for voice input and responds.
-        Press Ctrl+C to stop.
+        Args:
+            use_voice: If True, use microphone input (requires transcribe.py)
+                       If False, use text input mode
         """
-        pass  # Will be implemented in subsequent commits
+        self._running = True
+        print("\n" + "=" * 50)
+        print("ConversaVoice - Interactive Mode")
+        print("=" * 50)
+        print(f"Session ID: {self.session_id}")
+        print("Type 'quit' or 'exit' to stop.")
+        print("=" * 50 + "\n")
+
+        await self.initialize()
+
+        while self._running:
+            try:
+                # Get user input
+                self._set_state(PipelineState.LISTENING)
+                user_input = input("\nYou: ").strip()
+
+                if not user_input:
+                    continue
+
+                if user_input.lower() in ("quit", "exit", "q"):
+                    print("\nGoodbye!")
+                    break
+
+                # Process the input
+                result = await self.process_text(user_input)
+
+                # Display result info
+                print(f"\nAssistant: {result.assistant_response}")
+                print(f"  [style: {result.style}, latency: {result.latency_ms:.0f}ms]")
+
+                if result.is_repetition:
+                    print("  [Detected: User is repeating]")
+
+            except KeyboardInterrupt:
+                print("\n\nInterrupted. Shutting down...")
+                break
+
+        await self.shutdown()
