@@ -63,6 +63,29 @@ if result.is_repetition:
     print(f"User is repeating (similarity: {result.score:.0%})")
 ```
 
+## TTS Usage (Azure)
+
+```python
+from src.tts import AzureTTSClient, ProsodyProfile
+
+# Initialize client
+tts = AzureTTSClient()
+
+# Speak with emotional profile
+tts.speak("I understand your concern.", profile=ProsodyProfile.EMPATHETIC)
+
+# Speak with LLM response parameters
+tts.speak_with_llm_params(
+    text="I hear you.",
+    style="empathetic",
+    pitch="-5%",
+    rate="0.85"
+)
+
+# Save to file
+tts.synthesize_to_file("Hello world", "output.mp3")
+```
+
 ## Requirements
 
 - Python 3.10+
@@ -101,10 +124,11 @@ Building a context-aware voice assistant with emotional intelligence:
 - Vector similarity for repetition detection (threshold: 0.85)
 - Context retrieval for coherent responses
 
-### Phase 3: Voice Output (TTS) - PENDING
+### Phase 3: Voice Output (TTS) - COMPLETE
 - Azure Neural TTS integration
 - SSML-based emotional prosody control
-- Streaming audio for low latency
+- Prosody profiles: Empathetic, Patient, Cheerful, De-escalate
+- Direct integration with LLM response parameters
 
 ### Phase 4: Orchestrator - PENDING
 - Async pipeline: Mic -> Whisper -> LLM -> TTS -> Speaker
