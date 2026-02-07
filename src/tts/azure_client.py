@@ -94,3 +94,114 @@ class AzureTTSClient:
     def config(self) -> speechsdk.SpeechConfig:
         """Get the speech configuration."""
         return self._speech_config
+
+    def speak(
+        self,
+        text: str,
+        profile: ProsodyProfile = ProsodyProfile.NEUTRAL,
+        **kwargs
+    ) -> speechsdk.SpeechSynthesisResult:
+        """
+        Synthesize text and play through default speaker.
+
+        Args:
+            text: Text to synthesize
+            profile: Prosody profile for emotional control
+            **kwargs: Additional prosody overrides (pitch, rate, volume, style)
+
+        Returns:
+            Speech synthesis result
+        """
+        ssml = self.ssml_builder.build(text, profile=profile, **kwargs)
+        synthesizer = self._create_synthesizer()
+
+        return synthesizer.speak_ssml_async(ssml).get()
+
+    def speak_with_llm_params(
+        self,
+        text: str,
+        style: Optional[str] = None,
+        pitch: Optional[str] = None,
+        rate: Optional[str] = None
+    ) -> speechsdk.SpeechSynthesisResult:
+        """
+        Synthesize using parameters from LLM response.
+
+        Designed to work directly with Groq LLM JSON output.
+
+        Args:
+            text: Reply text from LLM
+            style: Style from LLM (e.g., "empathetic")
+            pitch: Pitch from LLM (e.g., "-5%")
+            rate: Rate from LLM (e.g., "0.85")
+
+        Returns:
+            Speech synthesis result
+        """
+        ssml = self.ssml_builder.build_from_llm_response(
+            text=text,
+            style=style,
+            pitch=pitch,
+            rate=rate
+        )
+        synthesizer = self._create_synthesizer()
+
+        return synthesizer.speak_ssml_async(ssml).get()
+
+    def synthesize_to_file(
+        self,
+        text: str,
+        filepath: str,
+        profile: ProsodyProfile = ProsodyProfile.NEUTRAL,
+        **kwargs
+    ) -> speechsdk.SpeechSynthesisResult:
+        """
+        Synthesize text and save to audio file.
+
+        Args:
+            text: Text to synthesize
+            filepath: Output file path
+            profile: Prosody profile for emotional control
+            **kwargs: Additional prosody overrides
+
+        Returns:
+            Speech synthesis result
+        """
+        ssml = self.ssml_builder.build(text, profile=profile, **kwargs)
+        audio_config = speechsdk.audio.AudioOutputConfig(filename=filepath)
+        synthesizer = self._create_synthesizer(audio_config=audio_config)
+
+        return synthesizer.speak_ssml_async(ssml).get()
+
+    def synthesize_to_bytes(
+        self,
+        text: str,
+        profile: ProsodyProfile = ProsodyProfile.NEUTRAL,
+        **kwargs
+    ) -> Optional[bytes]:
+        """
+        Synthesize text and return audio bytes.
+
+        Args:
+            text: Text to synthesize
+            profile: Prosody profile for emotional control
+            **kwargs: Additional prosody overrides
+
+        Returns:
+            Audio data as bytes, or None if synthesis failed
+        """
+        ssml = self.ssml_builder.build(text, profile=profile, **kwargs)
+
+        # Use None audio config to get audio data in result
+        audio_config = None
+        synthesizer = speechsdk.SpeechSynthesizer(
+            speech_config=self._speech_config,
+            audio_config=audio_config
+        )
+
+        result = synthesizer.speak_ssml_async(ssml).get()
+
+        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+            return result.audio_data
+
+        return None
