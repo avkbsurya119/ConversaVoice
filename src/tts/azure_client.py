@@ -5,11 +5,51 @@ Provides speech synthesis with SSML support for emotional prosody.
 """
 
 import os
-from typing import Optional
+from typing import Optional, Tuple
 
 import azure.cognitiveservices.speech as speechsdk
 
 from .ssml_builder import SSMLBuilder, ProsodyProfile
+
+
+class TTSError(Exception):
+    """Exception raised when TTS synthesis fails."""
+
+    def __init__(self, message: str, reason: Optional[str] = None, details: Optional[str] = None):
+        self.reason = reason
+        self.details = details
+        super().__init__(message)
+
+
+def _check_result(result: speechsdk.SpeechSynthesisResult) -> None:
+    """
+    Check synthesis result and raise TTSError if failed.
+
+    Args:
+        result: Speech synthesis result to check
+
+    Raises:
+        TTSError: If synthesis was not successful
+    """
+    if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+        return
+
+    if result.reason == speechsdk.ResultReason.Canceled:
+        cancellation = result.cancellation_details
+        error_msg = f"Speech synthesis canceled: {cancellation.reason}"
+
+        if cancellation.reason == speechsdk.CancellationReason.Error:
+            raise TTSError(
+                message=error_msg,
+                reason=str(cancellation.error_code),
+                details=cancellation.error_details
+            )
+        raise TTSError(message=error_msg, reason=str(cancellation.reason))
+
+    raise TTSError(
+        message=f"Speech synthesis failed with reason: {result.reason}",
+        reason=str(result.reason)
+    )
 
 
 class AzureTTSClient:
@@ -115,7 +155,9 @@ class AzureTTSClient:
         ssml = self.ssml_builder.build(text, profile=profile, **kwargs)
         synthesizer = self._create_synthesizer()
 
-        return synthesizer.speak_ssml_async(ssml).get()
+        result = synthesizer.speak_ssml_async(ssml).get()
+        _check_result(result)
+        return result
 
     def speak_with_llm_params(
         self,
@@ -146,7 +188,9 @@ class AzureTTSClient:
         )
         synthesizer = self._create_synthesizer()
 
-        return synthesizer.speak_ssml_async(ssml).get()
+        result = synthesizer.speak_ssml_async(ssml).get()
+        _check_result(result)
+        return result
 
     def synthesize_to_file(
         self,
@@ -171,14 +215,16 @@ class AzureTTSClient:
         audio_config = speechsdk.audio.AudioOutputConfig(filename=filepath)
         synthesizer = self._create_synthesizer(audio_config=audio_config)
 
-        return synthesizer.speak_ssml_async(ssml).get()
+        result = synthesizer.speak_ssml_async(ssml).get()
+        _check_result(result)
+        return result
 
     def synthesize_to_bytes(
         self,
         text: str,
         profile: ProsodyProfile = ProsodyProfile.NEUTRAL,
         **kwargs
-    ) -> Optional[bytes]:
+    ) -> bytes:
         """
         Synthesize text and return audio bytes.
 
@@ -188,7 +234,10 @@ class AzureTTSClient:
             **kwargs: Additional prosody overrides
 
         Returns:
-            Audio data as bytes, or None if synthesis failed
+            Audio data as bytes
+
+        Raises:
+            TTSError: If synthesis fails
         """
         ssml = self.ssml_builder.build(text, profile=profile, **kwargs)
 
@@ -200,8 +249,5 @@ class AzureTTSClient:
         )
 
         result = synthesizer.speak_ssml_async(ssml).get()
-
-        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-            return result.audio_data
-
-        return None
+        _check_result(result)
+        return result.audio_data
