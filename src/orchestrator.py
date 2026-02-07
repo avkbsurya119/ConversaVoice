@@ -144,16 +144,15 @@ class Orchestrator:
         Returns:
             Tuple of (reply, style, pitch, rate, is_repetition)
         """
-        # Check for repetition
+        # Check for repetition (also stores the embedding)
         repetition_result = self._vector_store.check_repetition(
             self.session_id,
             user_input
         )
         is_repetition = repetition_result.is_repetition
 
-        # Store the user message and its vector
+        # Store the user message in conversation history
         self._redis_client.add_message(self.session_id, "user", user_input)
-        self._vector_store.store_vector(self.session_id, user_input)
 
         # Get conversation context
         context = self._redis_client.get_context_string(self.session_id)
