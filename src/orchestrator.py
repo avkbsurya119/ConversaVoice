@@ -1,0 +1,323 @@
+"""
+Async Orchestrator for ConversaVoice.
+
+Manages the real-time pipeline: Microphone → Whisper → LLM → TTS → Speaker
+"""
+
+import asyncio
+import time
+from dataclasses import dataclass
+from typing import Optional, Callable
+from enum import Enum
+
+from .llm import GroqClient
+from .memory import RedisClient, VectorStore
+from .tts import AzureTTSClient, TTSError
+
+
+class OrchestratorError(Exception):
+    """Exception raised when the orchestrator encounters an error."""
+
+    def __init__(self, message: str, component: Optional[str] = None):
+        self.component = component
+        super().__init__(message)
+
+
+class PipelineState(Enum):
+    """States of the voice assistant pipeline."""
+
+    IDLE = "idle"
+    LISTENING = "listening"
+    PROCESSING = "processing"
+    SPEAKING = "speaking"
+    ERROR = "error"
+
+
+@dataclass
+class PipelineResult:
+    """Result from a single pipeline cycle."""
+
+    user_input: str
+    assistant_response: str
+    style: Optional[str] = None
+    pitch: Optional[str] = None
+    rate: Optional[str] = None
+    is_repetition: bool = False
+    latency_ms: float = 0.0
+
+
+class Orchestrator:
+    """
+    Async orchestrator for the voice assistant pipeline.
+
+    Coordinates: Whisper (STT) → Groq (LLM) → Azure (TTS)
+    """
+
+    def __init__(
+        self,
+        session_id: Optional[str] = None,
+        on_state_change: Optional[Callable[[PipelineState], None]] = None,
+        on_transcription: Optional[Callable[[str], None]] = None,
+        on_response: Optional[Callable[[str], None]] = None,
+    ):
+        """
+        Initialize the orchestrator.
+
+        Args:
+            session_id: Session ID for conversation memory
+            on_state_change: Callback when pipeline state changes
+            on_transcription: Callback when user speech is transcribed
+            on_response: Callback when assistant response is ready
+        """
+        self.session_id = session_id or self._generate_session_id()
+        self.on_state_change = on_state_change
+        self.on_transcription = on_transcription
+        self.on_response = on_response
+
+        self._state = PipelineState.IDLE
+        self._running = False
+        self._lock = asyncio.Lock()
+
+        # Components (initialized lazily)
+        self._llm_client = None
+        self._tts_client = None
+        self._redis_client = None
+        self._vector_store = None
+
+    @property
+    def state(self) -> PipelineState:
+        """Get current pipeline state."""
+        return self._state
+
+    @property
+    def is_running(self) -> bool:
+        """Check if the orchestrator is running."""
+        return self._running
+
+    def _set_state(self, state: PipelineState) -> None:
+        """Update pipeline state and notify callback."""
+        self._state = state
+        if self.on_state_change:
+            self.on_state_change(state)
+
+    def _generate_session_id(self) -> str:
+        """Generate a unique session ID."""
+        import uuid
+        return f"session-{uuid.uuid4().hex[:8]}"
+
+    async def initialize(self) -> None:
+        """
+        Initialize all pipeline components.
+
+        Call this before running the pipeline.
+
+        Raises:
+            OrchestratorError: If any component fails to initialize
+        """
+        try:
+            # Initialize LLM client
+            self._llm_client = GroqClient()
+        except Exception as e:
+            raise OrchestratorError(f"Failed to initialize LLM: {e}", component="llm")
+
+        try:
+            # Initialize Redis and memory components
+            self._redis_client = RedisClient()
+            self._redis_client.create_session(self.session_id)
+            self._vector_store = VectorStore(self._redis_client)
+        except Exception as e:
+            raise OrchestratorError(f"Failed to initialize Redis: {e}", component="memory")
+
+        try:
+            # Initialize TTS client
+            self._tts_client = AzureTTSClient()
+        except Exception as e:
+            raise OrchestratorError(f"Failed to initialize TTS: {e}", component="tts")
+
+    async def _get_llm_response(self, user_input: str) -> tuple[str, str, str, str, bool]:
+        """
+        Get response from LLM with context awareness.
+
+        Args:
+            user_input: User's transcribed text
+
+        Returns:
+            Tuple of (reply, style, pitch, rate, is_repetition)
+        """
+        # Check for repetition (also stores the embedding)
+        repetition_result = self._vector_store.check_repetition(
+            self.session_id,
+            user_input
+        )
+        is_repetition = repetition_result.is_repetition
+
+        # Store the user message in conversation history
+        self._redis_client.add_message(self.session_id, "user", user_input)
+
+        # Get conversation context
+        context = self._redis_client.get_context_string(self.session_id)
+
+        # Build context hint for LLM if user is repeating
+        context_hint = ""
+        if is_repetition:
+            context_hint = " The user seems to be repeating themselves - respond with extra patience."
+
+        # Get LLM response
+        response = self._llm_client.get_emotional_response(
+            user_input,
+            context=context + context_hint
+        )
+
+        # Store assistant response
+        self._redis_client.add_message(self.session_id, "assistant", response.reply)
+
+        return (
+            response.reply,
+            response.style,
+            response.pitch,
+            response.rate,
+            is_repetition
+        )
+
+    async def _speak(
+        self,
+        text: str,
+        style: Optional[str] = None,
+        pitch: Optional[str] = None,
+        rate: Optional[str] = None
+    ) -> None:
+        """
+        Synthesize and speak text using TTS.
+
+        Args:
+            text: Text to speak
+            style: Emotional style (e.g., "empathetic")
+            pitch: Pitch adjustment (e.g., "-5%")
+            rate: Speech rate (e.g., "0.85")
+        """
+        self._set_state(PipelineState.SPEAKING)
+
+        # Run TTS in a thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: self._tts_client.speak_with_llm_params(
+                text=text,
+                style=style,
+                pitch=pitch,
+                rate=rate
+            )
+        )
+
+    async def shutdown(self) -> None:
+        """
+        Shutdown the orchestrator and cleanup resources.
+        """
+        self._running = False
+        self._set_state(PipelineState.IDLE)
+
+    async def process_text(self, text: str, speak: bool = True) -> PipelineResult:
+        """
+        Process text input through the pipeline (skip STT).
+
+        Useful for testing or text-based interaction.
+
+        Args:
+            text: User input text
+            speak: Whether to speak the response (default True)
+
+        Returns:
+            Pipeline result with response and metadata
+
+        Raises:
+            OrchestratorError: If processing fails
+        """
+        start_time = time.perf_counter()
+
+        async with self._lock:
+            try:
+                self._set_state(PipelineState.PROCESSING)
+
+                # Notify transcription callback
+                if self.on_transcription:
+                    self.on_transcription(text)
+
+                # Get LLM response
+                reply, style, pitch, rate, is_repetition = await self._get_llm_response(text)
+
+                # Notify response callback
+                if self.on_response:
+                    self.on_response(reply)
+
+                # Speak the response
+                if speak:
+                    try:
+                        await self._speak(reply, style, pitch, rate)
+                    except TTSError as e:
+                        print(f"  [TTS Warning: {e}]")
+
+                # Calculate latency
+                latency_ms = (time.perf_counter() - start_time) * 1000
+
+                self._set_state(PipelineState.IDLE)
+
+                return PipelineResult(
+                    user_input=text,
+                    assistant_response=reply,
+                    style=style,
+                    pitch=pitch,
+                    rate=rate,
+                    is_repetition=is_repetition,
+                    latency_ms=latency_ms
+                )
+
+            except Exception as e:
+                self._set_state(PipelineState.ERROR)
+                raise OrchestratorError(f"Pipeline error: {e}")
+
+    async def run_interactive(self, use_voice: bool = False) -> None:
+        """
+        Run the orchestrator in interactive mode.
+
+        Args:
+            use_voice: If True, use microphone input (requires transcribe.py)
+                       If False, use text input mode
+        """
+        self._running = True
+        print("\n" + "=" * 50)
+        print("ConversaVoice - Interactive Mode")
+        print("=" * 50)
+        print(f"Session ID: {self.session_id}")
+        print("Type 'quit' or 'exit' to stop.")
+        print("=" * 50 + "\n")
+
+        await self.initialize()
+
+        while self._running:
+            try:
+                # Get user input
+                self._set_state(PipelineState.LISTENING)
+                user_input = input("\nYou: ").strip()
+
+                if not user_input:
+                    continue
+
+                if user_input.lower() in ("quit", "exit", "q"):
+                    print("\nGoodbye!")
+                    break
+
+                # Process the input
+                result = await self.process_text(user_input)
+
+                # Display result info
+                print(f"\nAssistant: {result.assistant_response}")
+                print(f"  [style: {result.style}, latency: {result.latency_ms:.0f}ms]")
+
+                if result.is_repetition:
+                    print("  [Detected: User is repeating]")
+
+            except KeyboardInterrupt:
+                print("\n\nInterrupted. Shutting down...")
+                break
+
+        await self.shutdown()
