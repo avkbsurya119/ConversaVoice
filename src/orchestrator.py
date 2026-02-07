@@ -15,6 +15,14 @@ from .memory import RedisClient, VectorStore
 from .tts import AzureTTSClient, TTSError
 
 
+class OrchestratorError(Exception):
+    """Exception raised when the orchestrator encounters an error."""
+
+    def __init__(self, message: str, component: Optional[str] = None):
+        self.component = component
+        super().__init__(message)
+
+
 class PipelineState(Enum):
     """States of the voice assistant pipeline."""
 
@@ -102,17 +110,29 @@ class Orchestrator:
         Initialize all pipeline components.
 
         Call this before running the pipeline.
+
+        Raises:
+            OrchestratorError: If any component fails to initialize
         """
-        # Initialize LLM client
-        self._llm_client = GroqClient()
+        try:
+            # Initialize LLM client
+            self._llm_client = GroqClient()
+        except Exception as e:
+            raise OrchestratorError(f"Failed to initialize LLM: {e}", component="llm")
 
-        # Initialize Redis and memory components
-        self._redis_client = RedisClient()
-        self._redis_client.create_session(self.session_id)
-        self._vector_store = VectorStore(self._redis_client)
+        try:
+            # Initialize Redis and memory components
+            self._redis_client = RedisClient()
+            self._redis_client.create_session(self.session_id)
+            self._vector_store = VectorStore(self._redis_client)
+        except Exception as e:
+            raise OrchestratorError(f"Failed to initialize Redis: {e}", component="memory")
 
-        # Initialize TTS client
-        self._tts_client = AzureTTSClient()
+        try:
+            # Initialize TTS client
+            self._tts_client = AzureTTSClient()
+        except Exception as e:
+            raise OrchestratorError(f"Failed to initialize TTS: {e}", component="tts")
 
     async def _get_llm_response(self, user_input: str) -> tuple[str, str, str, str, bool]:
         """
@@ -197,7 +217,7 @@ class Orchestrator:
         self._running = False
         self._set_state(PipelineState.IDLE)
 
-    async def process_text(self, text: str) -> PipelineResult:
+    async def process_text(self, text: str, speak: bool = True) -> PipelineResult:
         """
         Process text input through the pipeline (skip STT).
 
@@ -205,43 +225,56 @@ class Orchestrator:
 
         Args:
             text: User input text
+            speak: Whether to speak the response (default True)
 
         Returns:
             Pipeline result with response and metadata
+
+        Raises:
+            OrchestratorError: If processing fails
         """
         start_time = time.perf_counter()
 
         async with self._lock:
-            self._set_state(PipelineState.PROCESSING)
+            try:
+                self._set_state(PipelineState.PROCESSING)
 
-            # Notify transcription callback
-            if self.on_transcription:
-                self.on_transcription(text)
+                # Notify transcription callback
+                if self.on_transcription:
+                    self.on_transcription(text)
 
-            # Get LLM response
-            reply, style, pitch, rate, is_repetition = await self._get_llm_response(text)
+                # Get LLM response
+                reply, style, pitch, rate, is_repetition = await self._get_llm_response(text)
 
-            # Notify response callback
-            if self.on_response:
-                self.on_response(reply)
+                # Notify response callback
+                if self.on_response:
+                    self.on_response(reply)
 
-            # Speak the response
-            await self._speak(reply, style, pitch, rate)
+                # Speak the response
+                if speak:
+                    try:
+                        await self._speak(reply, style, pitch, rate)
+                    except TTSError as e:
+                        print(f"  [TTS Warning: {e}]")
 
-            # Calculate latency
-            latency_ms = (time.perf_counter() - start_time) * 1000
+                # Calculate latency
+                latency_ms = (time.perf_counter() - start_time) * 1000
 
-            self._set_state(PipelineState.IDLE)
+                self._set_state(PipelineState.IDLE)
 
-            return PipelineResult(
-                user_input=text,
-                assistant_response=reply,
-                style=style,
-                pitch=pitch,
-                rate=rate,
-                is_repetition=is_repetition,
-                latency_ms=latency_ms
-            )
+                return PipelineResult(
+                    user_input=text,
+                    assistant_response=reply,
+                    style=style,
+                    pitch=pitch,
+                    rate=rate,
+                    is_repetition=is_repetition,
+                    latency_ms=latency_ms
+                )
+
+            except Exception as e:
+                self._set_state(PipelineState.ERROR)
+                raise OrchestratorError(f"Pipeline error: {e}")
 
     async def run_interactive(self, use_voice: bool = False) -> None:
         """
