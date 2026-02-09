@@ -59,6 +59,7 @@ class Orchestrator:
         on_state_change: Optional[Callable[[PipelineState], None]] = None,
         on_transcription: Optional[Callable[[str], None]] = None,
         on_response: Optional[Callable[[str], None]] = None,
+        on_token: Optional[Callable[[str], None]] = None,
     ):
         """
         Initialize the orchestrator.
@@ -68,11 +69,13 @@ class Orchestrator:
             on_state_change: Callback when pipeline state changes
             on_transcription: Callback when user speech is transcribed
             on_response: Callback when assistant response is ready
+            on_token: Callback for each token in streaming mode
         """
         self.session_id = session_id or self._generate_session_id()
         self.on_state_change = on_state_change
         self.on_transcription = on_transcription
         self.on_response = on_response
+        self.on_token = on_token
 
         self._state = PipelineState.IDLE
         self._running = False
@@ -212,6 +215,71 @@ class Orchestrator:
             is_repetition
         )
 
+    async def _get_llm_response_stream(
+        self,
+        user_input: str,
+        on_token: Optional[Callable[[str], None]] = None
+    ) -> tuple[str, str, bool]:
+        """
+        Get response from LLM with streaming for lower latency.
+
+        Args:
+            user_input: User's transcribed text
+            on_token: Callback for each token received
+
+        Returns:
+            Tuple of (reply, style, is_repetition)
+        """
+        # Check for repetition (also stores the embedding)
+        repetition_result = self._vector_store.check_repetition(
+            self.session_id,
+            user_input
+        )
+        is_repetition = repetition_result.is_repetition
+
+        # Analyze sentiment for emotion detection
+        detected_emotion = None
+        if self._sentiment_analyzer:
+            detected_emotion = self._sentiment_analyzer.get_emotion_for_context(user_input)
+
+        # Update context labels (first_time, repetition, frustration)
+        self._redis_client.update_context_labels(
+            self.session_id,
+            is_repetition=is_repetition,
+            detected_emotion=detected_emotion
+        )
+
+        # Store the user message in conversation history
+        self._redis_client.add_message(self.session_id, "user", user_input)
+
+        # Get conversation context
+        context = self._redis_client.get_context_string(self.session_id)
+
+        # Get context hint based on labels
+        context_hint = self._redis_client.get_context_hint(self.session_id)
+        if context_hint:
+            context = f"{context}\n\n[Context: {context_hint}]"
+
+        # Get LLM response with streaming
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: self._llm_client.get_emotional_response_stream(
+                user_input,
+                context=context,
+                on_token=on_token
+            )
+        )
+
+        # Store assistant response
+        self._redis_client.add_message(self.session_id, "assistant", response.reply)
+
+        return (
+            response.reply,
+            response.style,
+            is_repetition
+        )
+
     async def _speak(self, text: str, style: Optional[str] = None) -> None:
         """
         Synthesize and speak text using TTS.
@@ -280,6 +348,75 @@ class Orchestrator:
                     self.on_response(reply)
 
                 # Speak the response (prosody fetched from Redis in _speak)
+                if speak:
+                    try:
+                        await self._speak(reply, style)
+                    except TTSError as e:
+                        self._redis_client.record_error(self.session_id, "tts")
+                        print(f"  [TTS Warning: {e}]")
+
+                # Calculate latency
+                latency_ms = (time.perf_counter() - start_time) * 1000
+
+                self._set_state(PipelineState.IDLE)
+
+                return PipelineResult(
+                    user_input=text,
+                    assistant_response=reply,
+                    style=style,
+                    is_repetition=is_repetition,
+                    latency_ms=latency_ms
+                )
+
+            except Exception as e:
+                self._set_state(PipelineState.ERROR)
+                self._redis_client.record_error(self.session_id, "pipeline")
+                raise OrchestratorError(f"Pipeline error: {e}")
+
+    async def process_text_stream(
+        self,
+        text: str,
+        speak: bool = True,
+        on_token: Optional[Callable[[str], None]] = None
+    ) -> PipelineResult:
+        """
+        Process text input with streaming LLM response.
+
+        Shows tokens as they arrive for lower perceived latency.
+
+        Args:
+            text: User input text
+            speak: Whether to speak the response (default True)
+            on_token: Callback for each token (overrides self.on_token)
+
+        Returns:
+            Pipeline result with response and metadata
+
+        Raises:
+            OrchestratorError: If processing fails
+        """
+        start_time = time.perf_counter()
+        token_callback = on_token or self.on_token
+
+        async with self._lock:
+            try:
+                self._set_state(PipelineState.PROCESSING)
+
+                # Notify transcription callback
+                if self.on_transcription:
+                    self.on_transcription(text)
+
+                # Get LLM response with streaming
+                reply, style, is_repetition = await self._get_llm_response_stream(
+                    text,
+                    on_token=token_callback
+                )
+
+                # Notify response callback (full response)
+                if self.on_response:
+                    self.on_response(reply)
+
+                # Speak the response
                 if speak:
                     try:
                         await self._speak(reply, style)
