@@ -1,13 +1,14 @@
 """
 Groq API client for ConversaVoice.
 Provides async interface to Llama 3 for intelligent, emotionally-aware responses.
+Supports streaming for reduced latency.
 """
 
 import os
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Generator, Callable
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,107 @@ class GroqClient:
         )
 
         return response.choices[0].message.content
+
+    def chat_stream(
+        self,
+        user_message: str,
+        context: Optional[str] = None,
+        on_chunk: Optional[Callable[[str], None]] = None
+    ) -> Generator[str, None, str]:
+        """
+        Stream a response from Llama 3 token by token.
+
+        Args:
+            user_message: The user's input text.
+            context: Optional conversation context/history.
+            on_chunk: Optional callback for each chunk received.
+
+        Yields:
+            Individual tokens/chunks as they arrive.
+
+        Returns:
+            Complete response text.
+        """
+        client = self._get_client()
+
+        messages = []
+
+        # Add system prompt
+        messages.append({
+            "role": "system",
+            "content": self._get_system_prompt()
+        })
+
+        # Add context if provided
+        if context:
+            messages.append({
+                "role": "user",
+                "content": f"Previous context: {context}"
+            })
+
+        # Add current user message
+        messages.append({
+            "role": "user",
+            "content": user_message
+        })
+
+        # Call Groq API with streaming
+        stream = client.chat.completions.create(
+            model=self.config.model,
+            messages=messages,
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens,
+            stream=True
+        )
+
+        full_response = ""
+        for chunk in stream:
+            if chunk.choices[0].delta.content is not None:
+                token = chunk.choices[0].delta.content
+                full_response += token
+                if on_chunk:
+                    on_chunk(token)
+                yield token
+
+        return full_response
+
+    def get_emotional_response_stream(
+        self,
+        user_message: str,
+        context: Optional[str] = None,
+        on_token: Optional[Callable[[str], None]] = None
+    ) -> EmotionalResponse:
+        """
+        Get an emotionally-aware response with streaming.
+
+        Streams tokens for lower perceived latency, then parses
+        the complete response for style and emphasis.
+
+        Args:
+            user_message: The user's input text.
+            context: Optional conversation context/history.
+            on_token: Optional callback for each token (for real-time display).
+
+        Returns:
+            EmotionalResponse with reply, style, and emphasis_words.
+        """
+        try:
+            # Collect all tokens
+            tokens = []
+            for token in self.chat_stream(user_message, context, on_chunk=on_token):
+                tokens.append(token)
+
+            raw_response = "".join(tokens)
+            return self._parse_response(raw_response)
+
+        except Exception as e:
+            logger.error(f"Error in streaming response: {e}")
+            return EmotionalResponse(
+                reply="I'm sorry, I encountered an issue. Could you please repeat that?",
+                style="empathetic",
+                emphasis_words=[],
+                raw_response=str(e)
+            )
 
     def _get_system_prompt(self) -> str:
         """
