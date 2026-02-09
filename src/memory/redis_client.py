@@ -181,3 +181,73 @@ class RedisClient:
         self.client.delete(self._history_key(session_id))
         logger.info(f"Cleared session: {session_id}")
         return True
+
+    # Prosody Profile Methods
+
+    def _prosody_key(self, style: str) -> str:
+        """Generate Redis key for prosody profile."""
+        return f"prosody:{style}"
+
+    def init_prosody_profiles(self) -> None:
+        """
+        Initialize default prosody profiles in Redis.
+
+        Profiles are based on Conversia.md specifications.
+        Call this once on startup to ensure profiles exist.
+        """
+        default_profiles = {
+            "neutral": {"pitch": "0%", "rate": "1.0", "volume": "medium"},
+            "cheerful": {"pitch": "+5%", "rate": "1.1", "volume": "medium"},
+            "patient": {"pitch": "-3%", "rate": "0.9", "volume": "medium"},
+            "empathetic": {"pitch": "-5%", "rate": "0.85", "volume": "medium"},
+            "de_escalate": {"pitch": "-10%", "rate": "0.8", "volume": "soft"},
+        }
+
+        for style, params in default_profiles.items():
+            key = self._prosody_key(style)
+            # Only set if not already exists (preserve custom values)
+            if not self.client.exists(key):
+                self.client.hset(key, mapping=params)
+                logger.info(f"Initialized prosody profile: {style}")
+
+    def get_prosody(self, style: str) -> dict:
+        """
+        Get prosody parameters for a given style.
+
+        Args:
+            style: Emotion style label (e.g., "empathetic", "patient").
+
+        Returns:
+            Dict with pitch, rate, and volume. Falls back to neutral if not found.
+        """
+        key = self._prosody_key(style)
+        params = self.client.hgetall(key)
+
+        if not params:
+            # Fallback to neutral if style not found
+            logger.warning(f"Prosody profile '{style}' not found, using neutral")
+            return {"pitch": "0%", "rate": "1.0", "volume": "medium"}
+
+        return params
+
+    def set_prosody(self, style: str, pitch: str, rate: str, volume: str = "medium") -> bool:
+        """
+        Set or update a prosody profile.
+
+        Args:
+            style: Emotion style label.
+            pitch: Pitch adjustment (e.g., "-5%", "+10%").
+            rate: Speech rate (e.g., "0.85", "1.1").
+            volume: Volume level (e.g., "soft", "medium", "loud").
+
+        Returns:
+            True if set successfully.
+        """
+        key = self._prosody_key(style)
+        self.client.hset(key, mapping={
+            "pitch": pitch,
+            "rate": rate,
+            "volume": volume
+        })
+        logger.info(f"Updated prosody profile: {style}")
+        return True
