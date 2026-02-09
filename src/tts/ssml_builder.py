@@ -20,6 +20,15 @@ class ProsodyProfile(Enum):
     DE_ESCALATE = "de_escalate"
 
 
+class EmphasisLevel(Enum):
+    """SSML emphasis levels for word stress."""
+
+    STRONG = "strong"      # Loudest/most stressed
+    MODERATE = "moderate"  # Default emphasis
+    REDUCED = "reduced"    # Quieter/less stressed
+    NONE = "none"          # No emphasis (explicit)
+
+
 # Azure Neural Voice express-as styles
 # See: https://learn.microsoft.com/en-us/azure/ai-services/speech-service/speech-synthesis-markup-voice
 AZURE_EXPRESS_STYLES = {
@@ -374,3 +383,124 @@ class SSMLBuilder:
         {content}
     </voice>
 </speak>'''
+
+    def add_emphasis(
+        self,
+        text: str,
+        words: list[str],
+        level: EmphasisLevel = EmphasisLevel.MODERATE
+    ) -> str:
+        """
+        Add emphasis tags to specific words in text.
+
+        Args:
+            text: The input text
+            words: List of words to emphasize
+            level: Emphasis level (strong, moderate, reduced)
+
+        Returns:
+            Text with emphasis SSML tags around specified words
+        """
+        if not words:
+            return text
+
+        result = text
+        for word in words:
+            # Case-insensitive replacement, preserving original case
+            import re
+            pattern = re.compile(re.escape(word), re.IGNORECASE)
+
+            def replace_with_emphasis(match):
+                original = match.group(0)
+                return f'<emphasis level="{level.value}">{original}</emphasis>'
+
+            result = pattern.sub(replace_with_emphasis, result)
+
+        return result
+
+    def apply_emphasis_markers(self, text: str) -> str:
+        """
+        Convert emphasis markers in text to SSML emphasis tags.
+
+        Supports markers:
+        - *word* -> strong emphasis
+        - _word_ -> moderate emphasis
+        - ~word~ -> reduced emphasis
+
+        Args:
+            text: Text with emphasis markers
+
+        Returns:
+            Text with SSML emphasis tags
+        """
+        import re
+
+        # Strong emphasis: *word*
+        text = re.sub(
+            r'\*([^*]+)\*',
+            r'<emphasis level="strong">\1</emphasis>',
+            text
+        )
+
+        # Moderate emphasis: _word_
+        text = re.sub(
+            r'_([^_]+)_',
+            r'<emphasis level="moderate">\1</emphasis>',
+            text
+        )
+
+        # Reduced emphasis: ~word~
+        text = re.sub(
+            r'~([^~]+)~',
+            r'<emphasis level="reduced">\1</emphasis>',
+            text
+        )
+
+        return text
+
+    def build_with_emphasis(
+        self,
+        text: str,
+        emphasis_words: Optional[list[str]] = None,
+        emphasis_level: EmphasisLevel = EmphasisLevel.MODERATE,
+        profile: ProsodyProfile = ProsodyProfile.NEUTRAL,
+        pitch: Optional[str] = None,
+        rate: Optional[str] = None,
+        volume: Optional[str] = None,
+        style: Optional[str] = None,
+        styledegree: Optional[float] = None
+    ) -> str:
+        """
+        Build SSML with emphasis on specific words.
+
+        Args:
+            text: The text to synthesize
+            emphasis_words: List of words to emphasize
+            emphasis_level: Level of emphasis for the words
+            profile: Pre-defined prosody profile
+            pitch: Override pitch
+            rate: Override rate
+            volume: Override volume
+            style: Override Azure express-as style
+            styledegree: Style intensity
+
+        Returns:
+            Complete SSML string with emphasis and prosody
+        """
+        # First apply emphasis to the text
+        if emphasis_words:
+            text = self.add_emphasis(text, emphasis_words, emphasis_level)
+
+        # Also process any inline markers
+        text = self.apply_emphasis_markers(text)
+
+        # Now build the full SSML (emphasis tags are inside the text)
+        return self.build(
+            text=text,
+            profile=profile,
+            pitch=pitch,
+            rate=rate,
+            volume=volume,
+            style=style,
+            styledegree=styledegree
+        )
