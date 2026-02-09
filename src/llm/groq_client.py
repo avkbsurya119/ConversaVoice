@@ -27,20 +27,16 @@ class GroqConfig:
 
 @dataclass
 class EmotionalResponse:
-    """Parsed response with emotional prosody parameters."""
+    """Parsed response with emotional style label."""
     reply: str
     style: str = "neutral"
-    pitch: str = "0%"
-    rate: str = "1.0"
     raw_response: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
             "reply": self.reply,
-            "style": self.style,
-            "pitch": self.pitch,
-            "rate": self.rate
+            "style": self.style
         }
 
 
@@ -126,7 +122,7 @@ class GroqClient:
         The prompt instructs Llama 3 to:
         1. Understand user intent and emotion
         2. Generate appropriate responses with behavior changes
-        3. Return JSON with prosody parameters for TTS
+        3. Return JSON with reply and style label (prosody fetched from Redis)
         """
         return """You are ConversaVoice, an emotionally intelligent voice assistant that ACTS differently based on user emotions, not just acknowledges them.
 
@@ -143,19 +139,16 @@ class GroqClient:
 ### neutral (default for new conversations, factual queries)
 - Ask 1-2 clarifying questions if genuinely needed
 - Provide balanced, informative responses
-- Prosody: pitch="0%", rate="1.0"
 
 ### cheerful (greetings, good news, excitement, task completion)
 - Be enthusiastic and action-oriented
 - Celebrate progress, encourage next steps
 - Keep energy high, be concise
-- Prosody: pitch="+5%", rate="1.1"
 
 ### patient (confusion, complex topics, learning)
 - Simplify explanations
 - Break down into smaller steps
 - Ask AT MOST one clarifying question
-- Prosody: pitch="-3%", rate="0.9"
 
 ### empathetic (frustration, repetition, annoyance, escalation)
 - **STOP ASKING QUESTIONS IMMEDIATELY**
@@ -163,7 +156,11 @@ class GroqClient:
 - Give a direct, actionable answer NOW
 - Acknowledge their frustration briefly, then SOLVE the problem
 - If you lack info, make a safe/general recommendation
-- Prosody: pitch="-5%", rate="0.85"
+
+### de_escalate (anger, high frustration, threats to leave)
+- Stay calm and grounded
+- Speak slowly and softly
+- Focus on resolution, not explanation
 
 ## FRUSTRATION ESCALATION POLICY
 
@@ -196,9 +193,7 @@ NOT generic specs like "i5, 8GB RAM".
 Always respond with valid JSON:
 {
     "reply": "Your response here",
-    "style": "neutral|cheerful|patient|empathetic",
-    "pitch": "-10% to +10%",
-    "rate": "0.8 to 1.2"
+    "style": "neutral|cheerful|patient|empathetic|de_escalate"
 }
 
 Only output the JSON object, no additional text."""
@@ -207,14 +202,15 @@ Only output the JSON object, no additional text."""
         self, user_message: str, context: Optional[str] = None
     ) -> EmotionalResponse:
         """
-        Get an emotionally-aware response with prosody parameters.
+        Get an emotionally-aware response with style label.
 
         Args:
             user_message: The user's input text.
             context: Optional conversation context/history.
 
         Returns:
-            EmotionalResponse with reply and prosody parameters.
+            EmotionalResponse with reply and style label.
+            Prosody parameters are fetched from Redis based on style.
         """
         try:
             raw_response = self.chat(user_message, context)
@@ -225,8 +221,6 @@ Only output the JSON object, no additional text."""
             return EmotionalResponse(
                 reply="I'm sorry, I encountered an issue. Could you please repeat that?",
                 style="empathetic",
-                pitch="-5%",
-                rate="0.9",
                 raw_response=str(e)
             )
 
@@ -238,7 +232,7 @@ Only output the JSON object, no additional text."""
             raw_response: Raw text from the LLM.
 
         Returns:
-            Parsed EmotionalResponse object.
+            Parsed EmotionalResponse object with reply and style.
         """
         try:
             # Try to extract JSON from the response
@@ -257,8 +251,6 @@ Only output the JSON object, no additional text."""
             return EmotionalResponse(
                 reply=data.get("reply", ""),
                 style=data.get("style", "neutral"),
-                pitch=data.get("pitch", "0%"),
-                rate=data.get("rate", "1.0"),
                 raw_response=raw_response
             )
 
@@ -268,7 +260,5 @@ Only output the JSON object, no additional text."""
             return EmotionalResponse(
                 reply=raw_response,
                 style="neutral",
-                pitch="0%",
-                rate="1.0",
                 raw_response=raw_response
             )

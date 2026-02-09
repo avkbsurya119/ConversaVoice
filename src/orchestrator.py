@@ -41,8 +41,6 @@ class PipelineResult:
     user_input: str
     assistant_response: str
     style: Optional[str] = None
-    pitch: Optional[str] = None
-    rate: Optional[str] = None
     is_repetition: bool = False
     latency_ms: float = 0.0
 
@@ -126,6 +124,7 @@ class Orchestrator:
             # Initialize Redis and memory components
             self._redis_client = RedisClient()
             self._redis_client.create_session(self.session_id)
+            self._redis_client.init_prosody_profiles()  # Initialize prosody profiles
             self._vector_store = VectorStore(self._redis_client)
         except Exception as e:
             raise OrchestratorError(f"Failed to initialize Redis: {e}", component="memory")
@@ -153,7 +152,7 @@ class Orchestrator:
         except Exception as e:
             raise OrchestratorError(f"Failed to initialize STT: {e}", component="stt")
 
-    async def _get_llm_response(self, user_input: str) -> tuple[str, str, str, str, bool]:
+    async def _get_llm_response(self, user_input: str) -> tuple[str, str, bool]:
         """
         Get response from LLM with context awareness.
 
@@ -161,7 +160,7 @@ class Orchestrator:
             user_input: User's transcribed text
 
         Returns:
-            Tuple of (reply, style, pitch, rate, is_repetition)
+            Tuple of (reply, style, is_repetition)
         """
         # Check for repetition (also stores the embedding)
         repetition_result = self._vector_store.check_repetition(
@@ -193,28 +192,23 @@ class Orchestrator:
         return (
             response.reply,
             response.style,
-            response.pitch,
-            response.rate,
             is_repetition
         )
 
-    async def _speak(
-        self,
-        text: str,
-        style: Optional[str] = None,
-        pitch: Optional[str] = None,
-        rate: Optional[str] = None
-    ) -> None:
+    async def _speak(self, text: str, style: Optional[str] = None) -> None:
         """
         Synthesize and speak text using TTS.
 
+        Fetches prosody parameters from Redis based on style label.
+
         Args:
             text: Text to speak
-            style: Emotional style (e.g., "empathetic")
-            pitch: Pitch adjustment (e.g., "-5%")
-            rate: Speech rate (e.g., "0.85")
+            style: Emotional style label (e.g., "empathetic")
         """
         self._set_state(PipelineState.SPEAKING)
+
+        # Fetch prosody from Redis based on style
+        prosody = self._redis_client.get_prosody(style or "neutral")
 
         # Run TTS in a thread pool to avoid blocking
         loop = asyncio.get_event_loop()
@@ -223,8 +217,8 @@ class Orchestrator:
             lambda: self._tts_client.speak_with_llm_params(
                 text=text,
                 style=style,
-                pitch=pitch,
-                rate=rate
+                pitch=prosody.get("pitch", "0%"),
+                rate=prosody.get("rate", "1.0")
             )
         )
 
@@ -261,17 +255,17 @@ class Orchestrator:
                 if self.on_transcription:
                     self.on_transcription(text)
 
-                # Get LLM response
-                reply, style, pitch, rate, is_repetition = await self._get_llm_response(text)
+                # Get LLM response (style label only, prosody fetched from Redis)
+                reply, style, is_repetition = await self._get_llm_response(text)
 
                 # Notify response callback
                 if self.on_response:
                     self.on_response(reply)
 
-                # Speak the response
+                # Speak the response (prosody fetched from Redis in _speak)
                 if speak:
                     try:
-                        await self._speak(reply, style, pitch, rate)
+                        await self._speak(reply, style)
                     except TTSError as e:
                         print(f"  [TTS Warning: {e}]")
 
@@ -284,8 +278,6 @@ class Orchestrator:
                     user_input=text,
                     assistant_response=reply,
                     style=style,
-                    pitch=pitch,
-                    rate=rate,
                     is_repetition=is_repetition,
                     latency_ms=latency_ms
                 )
