@@ -11,6 +11,7 @@ Context-aware voice assistant with emotional intelligence, powered by Distil-Whi
 - **Repetition detection** - Cosine similarity to detect when users repeat themselves
 - **Emotional speech** - Azure Neural TTS with SSML prosody control
 - **Async orchestrator** - Full pipeline from voice/text input to spoken response
+- **Streaming responses** - Token-by-token LLM streaming and chunked TTS for low latency
 - **GPU accelerated** - Optimized for NVIDIA GPUs (CUDA)
 
 ## Quick Start
@@ -290,6 +291,66 @@ Building a context-aware voice assistant with emotional intelligence:
 - Word emphasis support (strong, moderate, reduced)
 - LLM returns emphasis_words for automatic speech emphasis
 - Inline emphasis markers (*strong*, _moderate_, ~reduced~)
+
+### Phase 8: Streaming Pipeline - COMPLETE
+- Token-by-token LLM streaming for real-time response display
+- Chunked TTS synthesis for faster time-to-first-audio
+- Sentence-by-sentence audio generation
+- Callbacks for streaming progress (on_token, on_audio_chunk)
+
+## Streaming (Low Latency)
+
+ConversaVoice supports streaming for reduced perceived latency:
+
+### LLM Streaming
+
+```python
+from src.llm import GroqClient
+
+client = GroqClient()
+
+# Stream tokens as they arrive
+def on_token(token):
+    print(token, end="", flush=True)
+
+response = client.get_emotional_response_stream(
+    "Tell me about Python",
+    on_token=on_token
+)
+print(f"\n[Style: {response.style}]")
+```
+
+### Orchestrator Streaming
+
+```python
+import asyncio
+from src.orchestrator import Orchestrator
+
+async def main():
+    orch = Orchestrator(on_token=lambda t: print(t, end="", flush=True))
+    await orch.initialize()
+
+    # Process with streaming (tokens shown as they arrive)
+    result = await orch.process_text_stream("What's the weather like?")
+    print(f"\n[Latency: {result.latency_ms:.0f}ms]")
+
+asyncio.run(main())
+```
+
+### Chunked TTS
+
+```python
+from src.tts import AzureTTSClient
+
+tts = AzureTTSClient()
+
+# Speak sentence-by-sentence (faster first audio)
+tts.speak_chunked(
+    "Hello! This is a long response. It will play sentence by sentence.",
+    style="cheerful",
+    on_sentence_start=lambda s, i: print(f"Speaking: {s}")
+)
+```
 
 ## Tech Stack
 
