@@ -27,16 +27,18 @@ class GroqConfig:
 
 @dataclass
 class EmotionalResponse:
-    """Parsed response with emotional style label."""
+    """Parsed response with emotional style label and emphasis words."""
     reply: str
     style: str = "neutral"
+    emphasis_words: list = field(default_factory=list)
     raw_response: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
             "reply": self.reply,
-            "style": self.style
+            "style": self.style,
+            "emphasis_words": self.emphasis_words
         }
 
 
@@ -193,8 +195,15 @@ NOT generic specs like "i5, 8GB RAM".
 Always respond with valid JSON:
 {
     "reply": "Your response here",
-    "style": "neutral|cheerful|patient|empathetic|de_escalate"
+    "style": "neutral|cheerful|patient|empathetic|de_escalate",
+    "emphasis_words": ["word1", "word2"]
 }
+
+- emphasis_words: Optional list of 1-3 KEY words in your reply that should be stressed/emphasized when spoken. Choose words that:
+  - Convey the most important information
+  - Are action items or key nouns
+  - Help clarify meaning through vocal stress
+  - Example: For "I recommend the NVIDIA RTX 4060", emphasize ["NVIDIA", "RTX 4060"]
 
 Only output the JSON object, no additional text."""
 
@@ -232,7 +241,7 @@ Only output the JSON object, no additional text."""
             raw_response: Raw text from the LLM.
 
         Returns:
-            Parsed EmotionalResponse object with reply and style.
+            Parsed EmotionalResponse object with reply, style, and emphasis_words.
         """
         try:
             # Try to extract JSON from the response
@@ -248,9 +257,15 @@ Only output the JSON object, no additional text."""
 
             data = json.loads(json_str)
 
+            # Extract emphasis_words (default to empty list if not provided)
+            emphasis_words = data.get("emphasis_words", [])
+            if not isinstance(emphasis_words, list):
+                emphasis_words = []
+
             return EmotionalResponse(
                 reply=data.get("reply", ""),
                 style=data.get("style", "neutral"),
+                emphasis_words=emphasis_words,
                 raw_response=raw_response
             )
 
@@ -260,5 +275,6 @@ Only output the JSON object, no additional text."""
             return EmotionalResponse(
                 reply=raw_response,
                 style="neutral",
+                emphasis_words=[],
                 raw_response=raw_response
             )

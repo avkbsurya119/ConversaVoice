@@ -2,10 +2,17 @@
 Text-to-Speech module for ConversaVoice.
 
 Provides Azure Neural TTS integration with SSML support
-for emotional prosody control.
+for emotional prosody control and word emphasis.
 """
 
-from .ssml_builder import SSMLBuilder, ProsodyProfile, ProsodySettings, PROSODY_PROFILES
+from .ssml_builder import (
+    SSMLBuilder,
+    ProsodyProfile,
+    ProsodySettings,
+    PROSODY_PROFILES,
+    EmphasisLevel,
+    AZURE_EXPRESS_STYLES,
+)
 from .azure_client import AzureTTSClient, TTSError
 
 __all__ = [
@@ -13,6 +20,8 @@ __all__ = [
     "ProsodyProfile",
     "ProsodySettings",
     "PROSODY_PROFILES",
+    "EmphasisLevel",
+    "AZURE_EXPRESS_STYLES",
     "AzureTTSClient",
     "TTSError",
 ]
