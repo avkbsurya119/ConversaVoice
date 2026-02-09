@@ -2,10 +2,12 @@
 Azure Neural TTS client for ConversaVoice.
 
 Provides speech synthesis with SSML support for emotional prosody.
+Supports streaming and chunked synthesis for lower latency.
 """
 
 import os
-from typing import Optional, Tuple
+import re
+from typing import Optional, Callable, Generator
 
 import azure.cognitiveservices.speech as speechsdk
 
@@ -246,6 +248,170 @@ class AzureTTSClient:
         synthesizer = speechsdk.SpeechSynthesizer(
             speech_config=self._speech_config,
             audio_config=audio_config
+        )
+
+        result = synthesizer.speak_ssml_async(ssml).get()
+        _check_result(result)
+        return result.audio_data
+
+    def speak_streamed(
+        self,
+        text: str,
+        style: Optional[str] = None,
+        pitch: Optional[str] = None,
+        rate: Optional[str] = None,
+        on_audio_chunk: Optional[Callable[[bytes], None]] = None
+    ) -> None:
+        """
+        Synthesize with streaming audio output.
+
+        Enables real-time audio playback as synthesis progresses.
+
+        Args:
+            text: Text to synthesize
+            style: Emotional style
+            pitch: Pitch adjustment
+            rate: Speech rate
+            on_audio_chunk: Callback for each audio chunk received
+        """
+        ssml = self.ssml_builder.build_from_llm_response(
+            text=text,
+            style=style,
+            pitch=pitch,
+            rate=rate
+        )
+
+        # Create synthesizer with pull audio stream for chunked output
+        synthesizer = self._create_synthesizer()
+
+        # Set up event handler for streaming audio
+        if on_audio_chunk:
+            def audio_handler(evt):
+                if evt.result.audio_data:
+                    on_audio_chunk(evt.result.audio_data)
+
+            synthesizer.synthesizing.connect(audio_handler)
+
+        # Start synthesis (blocks until complete, but events fire during)
+        result = synthesizer.speak_ssml_async(ssml).get()
+        _check_result(result)
+
+    def split_into_sentences(self, text: str) -> list[str]:
+        """
+        Split text into sentences for chunked TTS.
+
+        Args:
+            text: Input text
+
+        Returns:
+            List of sentences
+        """
+        # Split on sentence boundaries while preserving punctuation
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        return [s.strip() for s in sentences if s.strip()]
+
+    def speak_chunked(
+        self,
+        text: str,
+        style: Optional[str] = None,
+        pitch: Optional[str] = None,
+        rate: Optional[str] = None,
+        on_sentence_start: Optional[Callable[[str, int], None]] = None,
+        on_sentence_complete: Optional[Callable[[int], None]] = None
+    ) -> None:
+        """
+        Synthesize text sentence-by-sentence for faster first audio.
+
+        Splits text into sentences and synthesizes each separately,
+        reducing time-to-first-audio for long responses.
+
+        Args:
+            text: Full text to synthesize
+            style: Emotional style
+            pitch: Pitch adjustment
+            rate: Speech rate
+            on_sentence_start: Callback when sentence synthesis starts (sentence, index)
+            on_sentence_complete: Callback when sentence completes (index)
+        """
+        sentences = self.split_into_sentences(text)
+
+        for i, sentence in enumerate(sentences):
+            if on_sentence_start:
+                on_sentence_start(sentence, i)
+
+            # Synthesize and play this sentence
+            self.speak_with_llm_params(
+                text=sentence,
+                style=style,
+                pitch=pitch,
+                rate=rate
+            )
+
+            if on_sentence_complete:
+                on_sentence_complete(i)
+
+    def synthesize_chunks_generator(
+        self,
+        text: str,
+        style: Optional[str] = None,
+        pitch: Optional[str] = None,
+        rate: Optional[str] = None
+    ) -> Generator[bytes, None, None]:
+        """
+        Generate audio chunks for each sentence.
+
+        Yields audio bytes for each sentence, allowing the caller
+        to play audio incrementally.
+
+        Args:
+            text: Full text to synthesize
+            style: Emotional style
+            pitch: Pitch adjustment
+            rate: Speech rate
+
+        Yields:
+            Audio bytes for each sentence
+        """
+        sentences = self.split_into_sentences(text)
+
+        for sentence in sentences:
+            audio_bytes = self.synthesize_to_bytes_with_params(
+                text=sentence,
+                style=style,
+                pitch=pitch,
+                rate=rate
+            )
+            yield audio_bytes
+
+    def synthesize_to_bytes_with_params(
+        self,
+        text: str,
+        style: Optional[str] = None,
+        pitch: Optional[str] = None,
+        rate: Optional[str] = None
+    ) -> bytes:
+        """
+        Synthesize text with LLM params and return audio bytes.
+
+        Args:
+            text: Text to synthesize
+            style: Emotional style
+            pitch: Pitch adjustment
+            rate: Speech rate
+
+        Returns:
+            Audio data as bytes
+        """
+        ssml = self.ssml_builder.build_from_llm_response(
+            text=text,
+            style=style,
+            pitch=pitch,
+            rate=rate
+        )
+
+        synthesizer = speechsdk.SpeechSynthesizer(
+            speech_config=self._speech_config,
+            audio_config=None
         )
 
         result = synthesizer.speak_ssml_async(ssml).get()
