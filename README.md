@@ -26,7 +26,7 @@ docker run -d --name redis -p 6379:6379 redis
 python main.py
 
 # Run the Web UI (Streamlit)
-streamlit run app.py
+streamlit run frontend/app.py
 
 # Run with voice input (microphone)
 python main.py --voice
