@@ -456,36 +456,43 @@ if not st.session_state.processing:
             )
 
 # Process Voice Recording from browser
+# Track processed audio to avoid reprocessing the same recording
+if "last_processed_audio" not in st.session_state:
+    st.session_state.last_processed_audio = None
+
 if "audio_recorder" in st.session_state and st.session_state.audio_recorder is not None:
     audio_bytes = st.session_state.audio_recorder
-    try:
-        # Save audio bytes to temp file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
-            temp_audio.write(audio_bytes.getvalue())
-            temp_audio_path = temp_audio.name
+    # Create a unique ID for this audio to detect if it's new
+    audio_data = audio_bytes.getvalue()
+    audio_id = hash(audio_data)
 
-        # Transcribe via API
-        with st.spinner("Transcribing your voice... 🎤"):
-            transcribed_text = st.session_state.api_client.transcribe_audio(temp_audio_path)
-
-        # Cleanup temp file
+    # Only process if this is a new recording
+    if audio_id != st.session_state.last_processed_audio:
+        st.session_state.last_processed_audio = audio_id
         try:
-            os.remove(temp_audio_path)
-        except:
-            pass
+            # Save audio bytes to temp file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
+                temp_audio.write(audio_data)
+                temp_audio_path = temp_audio.name
 
-        if transcribed_text:
-            st.session_state.pending_text = transcribed_text
-            # Clear the audio input
-            st.session_state.audio_recorder = None
-            st.rerun()
-        else:
-            st.warning("No speech detected.")
-            st.session_state.audio_recorder = None
+            # Transcribe via API
+            with st.spinner("Transcribing your voice... 🎤"):
+                transcribed_text = st.session_state.api_client.transcribe_audio(temp_audio_path)
 
-    except Exception as e:
-        st.error(f"Error processing recording: {e}")
-        st.session_state.audio_recorder = None
+            # Cleanup temp file
+            try:
+                os.remove(temp_audio_path)
+            except:
+                pass
+
+            if transcribed_text:
+                st.session_state.pending_text = transcribed_text
+                st.rerun()
+            else:
+                st.warning("No speech detected.")
+
+        except Exception as e:
+            st.error(f"Error processing recording: {e}")
 
 # Process Pending Text (from input or voice)
 if "pending_text" in st.session_state and st.session_state.pending_text:

@@ -1,3 +1,10 @@
+databases:
+  # Redis for conversation memory
+  - name: conversavoice-redis
+    type: redis
+    plan: free
+    region: oregon
+
 services:
   # Service 1: The FastAPI Backend
   - type: web
@@ -15,6 +22,14 @@ services:
         sync: false # Set this in the Render dashboard
       - key: AZURE_SPEECH_REGION
         sync: false # Set this in the Render dashboard
+      - key: REDIS_HOST
+        fromDatabase:
+          name: conversavoice-redis
+          property: host
+      - key: REDIS_PORT
+        fromDatabase:
+          name: conversavoice-redis
+          property: port
 
   # Service 2: The Streamlit Frontend
   - type: web
