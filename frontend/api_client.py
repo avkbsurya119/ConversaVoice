@@ -136,7 +136,7 @@ class APIClient:
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
-                timeout=30
+                timeout=120
             )
             
             result = self._handle_response(response)

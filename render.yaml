@@ -1,0 +1,40 @@
+services:
+  # Service 1: The FastAPI Backend
+  - type: web
+    name: conversavoice-backend
+    env: python
+    region: oregon
+    plan: free # Or "starter" for more performance
+    buildCommand: "pip install -r backend/requirements.txt"
+    startCommand: "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.11
+      - key: BACKEND_API_URL
+        fromService:
+          type: web
+          name: conversavoice-backend
+          property: url
+      - key: GROQ_API_KEY
+        sync: false # Set this in the Render dashboard
+      - key: AZURE_SPEECH_KEY
+        sync: false # Set this in the Render dashboard
+      - key: AZURE_SPEECH_REGION
+        sync: false # Set this in the Render dashboard
+
+  # Service 2: The Streamlit Frontend
+  - type: web
+    name: conversavoice-frontend
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: "pip install -r frontend/requirements.txt"
+    startCommand: "streamlit run frontend/app.py --server.port $PORT --server.address 0.0.0.0"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.11
+      - key: BACKEND_API_URL
+        fromService:
+          type: web
+          name: conversavoice-backend
+          property: url

@@ -10,7 +10,7 @@ import scipy.io.wavfile as wav
 import numpy as np
 
 # Add parent directory to path to import frontend modules
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from frontend.api_client import APIClient
 
