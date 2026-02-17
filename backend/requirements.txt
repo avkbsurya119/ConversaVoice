@@ -7,10 +7,6 @@ requests
 groq
 azure-cognitiveservices-speech
 redis
-sentence-transformers
-torch
-torchaudio
-transformers
-accelerate
+fastembed
 soundfile
 numpy
