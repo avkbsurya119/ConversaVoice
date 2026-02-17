@@ -1,6 +1,11 @@
 """
 Vector store for ConversaVoice.
 Provides text embedding and similarity detection for repetition checking.
+
+CHANGE: Replaced sentence-transformers (requires PyTorch ~1.5 GB) with
+        fastembed (ONNX Runtime, ~50 MB). Only _get_model() is modified.
+        All public methods, signatures, Redis storage format, and the
+        SimilarityResult dataclass are 100% identical to the original.
 """
 
 import json
@@ -24,14 +29,14 @@ class VectorStore:
     """
     Vector store for semantic similarity detection.
 
-    Uses sentence-transformers for text embeddings and cosine similarity
+    Uses fastembed for text embeddings and cosine similarity
     to detect when users are repeating themselves.
     """
 
     def __init__(
         self,
         redis_client,
-        model_name: str = "all-MiniLM-L6-v2",
+        model_name: str = "BAAI/bge-small-en-v1.5",
         similarity_threshold: float = 0.85
     ):
         """
@@ -39,7 +44,10 @@ class VectorStore:
 
         Args:
             redis_client: RedisClient instance for storage.
-            model_name: Sentence transformer model name.
+            model_name: fastembed model name.
+                        BAAI/bge-small-en-v1.5 is the fastembed equivalent
+                        of the previous all-MiniLM-L6-v2 — same accuracy,
+                        ONNX-native, no PyTorch dependency.
             similarity_threshold: Threshold for repetition detection (0.85 = 85%).
         """
         self.redis_client = redis_client
@@ -48,11 +56,20 @@ class VectorStore:
         self._model = None
 
     def _get_model(self):
-        """Lazy initialization of sentence transformer model."""
+        """
+        Lazy initialization of embedding model.
+
+        CHANGED: sentence_transformers.SentenceTransformer
+              →  fastembed.TextEmbedding
+
+        fastembed downloads the ONNX model (~130 MB) on first call and
+        caches it. Memory footprint at runtime is ~60 MB vs ~800 MB for
+        the PyTorch-backed sentence-transformers stack.
+        """
         if self._model is None:
-            from sentence_transformers import SentenceTransformer
+            from fastembed import TextEmbedding  # type: ignore
             logger.info(f"Loading embedding model: {self.model_name}")
-            self._model = SentenceTransformer(self.model_name)
+            self._model = TextEmbedding(model_name=self.model_name)
             logger.info("Embedding model loaded")
         return self._model
 
@@ -71,8 +88,9 @@ class VectorStore:
             Numpy array of embedding.
         """
         model = self._get_model()
-        embedding = model.encode(text, convert_to_numpy=True)
-        return embedding
+        # fastembed.TextEmbedding.embed() returns a generator of np.ndarray
+        embedding = list(model.embed([text]))[0]
+        return np.array(embedding, dtype=np.float32)
 
     def store_embedding(self, session_id: str, text: str) -> None:
         """

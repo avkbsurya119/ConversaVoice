@@ -5,7 +5,7 @@ Provides connection handling and basic operations for conversation memory.
 
 import os
 import logging
-from typing import Optional
+from typing import Optional, Any, List, Dict, Union
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -14,6 +14,107 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 logger = logging.getLogger(__name__)
+
+
+class SimpleRedis:
+    """
+    In-memory Redis mock for fallback when Redis is not available.
+    """
+    def __init__(self):
+        self._data = {}
+        self._expires = {}
+    
+    def ping(self):
+        return True
+    
+    def hset(self, name: str, key: str = None, value: str = None, mapping: Dict = None) -> int:
+        if name not in self._data:
+            self._data[name] = {}
+        
+        if not isinstance(self._data[name], dict):
+             # Should not happen if usage is consistent
+             self._data[name] = {}
+
+        count = 0
+        if mapping:
+            for k, v in mapping.items():
+                self._data[name][k] = str(v)
+                count += 1
+        if key and value is not None:
+            self._data[name][key] = str(value)
+            count += 1
+        return count
+    
+    def hget(self, name: str, key: str) -> Optional[str]:
+        if name in self._data and isinstance(self._data[name], dict):
+            return self._data[name].get(key)
+        return None
+    
+    def hgetall(self, name: str) -> Dict[str, str]:
+        if name in self._data and isinstance(self._data[name], dict):
+            return self._data[name].copy()
+        return {}
+    
+    def hincrby(self, name: str, key: str, amount: int = 1) -> int:
+        if name not in self._data:
+            self._data[name] = {}
+        
+        current = self._data[name].get(key, "0")
+        try:
+            val = int(current)
+            val += amount
+            self._data[name][key] = str(val)
+            return val
+        except ValueError:
+            # Redis raises error if not integer, we will reset or raise
+            self._data[name][key] = str(amount)
+            return amount
+
+    def rpush(self, name: str, *values) -> int:
+        if name not in self._data:
+            self._data[name] = []
+        
+        if not isinstance(self._data[name], list):
+             # Force convert or error? Redis gives WRONGTYPE. 
+             # For mock we can force reset or just be lenient.
+             self._data[name] = []
+             
+        for v in values:
+            self._data[name].append(str(v))
+        return len(self._data[name])
+    
+    def lrange(self, name: str, start: int, end: int) -> List[str]:
+        if name not in self._data or not isinstance(self._data[name], list):
+            return []
+        
+        # Redis lrange is inclusive of end
+        # Python slice is exclusive of end
+        if end == -1:
+            return self._data[name][start:]
+        return self._data[name][start : end + 1]
+
+    def delete(self, *names) -> int:
+        count = 0
+        for name in names:
+            if name in self._data:
+                del self._data[name]
+                count += 1
+        return count
+
+    def expire(self, name: str, time: int) -> bool:
+        # We won't implement actual expiration logic for this simple mock
+        # just pretend we did
+        return True
+        
+    def exists(self, *names) -> int:
+        count = 0
+        for name in names:
+            if name in self._data:
+                count += 1
+        return count
+
+    def close(self):
+        pass
 
 
 class RedisClient:
@@ -42,24 +143,29 @@ class RedisClient:
         self.port = port or int(os.getenv("REDIS_PORT", "6379"))
         self.db = db
         self._client = None
+        self._use_fallback = False
 
     def _get_client(self):
         """Lazy initialization of Redis client."""
         if self._client is None:
             import redis
-            self._client = redis.Redis(
-                host=self.host,
-                port=self.port,
-                db=self.db,
-                decode_responses=True
-            )
-            # Test connection
             try:
-                self._client.ping()
+                # Try connecting to real Redis
+                client = redis.Redis(
+                    host=self.host,
+                    port=self.port,
+                    db=self.db,
+                    decode_responses=True,
+                     socket_connect_timeout=1  # Fast fail
+                )
+                client.ping()
+                self._client = client
                 logger.info(f"Connected to Redis at {self.host}:{self.port}")
-            except redis.ConnectionError as e:
-                logger.error(f"Failed to connect to Redis: {e}")
-                raise
+            except (redis.ConnectionError, redis.TimeoutError) as e:
+                logger.warning(f"Failed to connect to Redis: {e}. Using in-memory fallback.")
+                self._use_fallback = True
+                self._client = SimpleRedis()
+                
         return self._client
 
     @property
